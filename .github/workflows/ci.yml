@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine-tests:
+    name: Engine tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCUSTOMKEYS_BUILD_APP=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  macos-app:
+    name: macOS app (Standalone, AU, VST3)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE download
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-${{ runner.os }}-${{ hashFiles('cmake/JUCE.cmake') }}
+
+      - name: Configure
+        run: cmake -S . -B build -G Xcode -DCUSTOMKEYS_BUILD_TESTS=OFF
+
+      - name: Build
+        run: >
+          cmake --build build --config Release --parallel
+          --target CustomKeys_Standalone CustomKeys_AU CustomKeys_VST3
+          -- -quiet
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp -R "build/app/CustomKeys_artefacts/Release/Standalone/CustomKeys.app" dist/
+          cp -R "build/app/CustomKeys_artefacts/Release/AU/CustomKeys.component" dist/
+          cp -R "build/app/CustomKeys_artefacts/Release/VST3/CustomKeys.vst3" dist/
+          cd dist && zip -qry ../CustomKeys-macOS-unsigned.zip .
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: CustomKeys-macOS-unsigned
+          path: CustomKeys-macOS-unsigned.zip
