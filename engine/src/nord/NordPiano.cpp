@@ -479,6 +479,7 @@ std::shared_ptr<Instrument> buildInstrument (const PianoInfo& info,
     // plays at the same level before touch, and the trims and a fixed 6 dB pull it down.
     // Matching that leaves room for big pedalled chords before the limiter has to act.
     instrument->outputGain = 0.18f;
+
     for (size_t k = 0; k < 128; ++k)
         instrument->keyTuneCents[k] = static_cast<float> (info.keyTuneCents[k]);
 
@@ -502,6 +503,15 @@ std::shared_ptr<Instrument> buildInstrument (const PianoInfo& info,
             instrument->zoneForKey[static_cast<size_t> (key)] = static_cast<int16_t> (z);
         instrument->zones.push_back (zone);
     }
+
+    // Per-key voicing: the header's level trims, 0.1 dB a step, relative to the loudest key.
+    int loudestTrim = INT32_MIN;
+    for (size_t k = 0; k < 128; ++k)
+        if (instrument->zoneForKey[k] >= 0)
+            loudestTrim = std::max (loudestTrim, info.keyLevelTrim[k]);
+    for (size_t k = 0; k < 128; ++k)
+        if (instrument->zoneForKey[k] >= 0)
+            instrument->keyGain[k] = static_cast<float> (std::pow (10.0, std::max (info.keyLevelTrim[k] - loudestTrim, -200) * 0.1 / 20.0));
 
     for (int v = 0; v < 128; ++v)
         instrument->velocityGain[static_cast<size_t> (v)] = static_cast<float> (std::pow (10.0, -touchAttenuation (std::max (v, 1)) / 100.0));

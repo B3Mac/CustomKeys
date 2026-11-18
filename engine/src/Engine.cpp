@@ -224,7 +224,8 @@ void Engine::noteOn (int note, int velocity) noexcept
     }
 
     voice->startSample (note, *sample, pitchSemitones,
-                        current->outputGain * current->velocityGain[static_cast<size_t> (velocity)],
+                        current->outputGain * current->keyGain[static_cast<size_t> (note)]
+                            * current->velocityGain[static_cast<size_t> (velocity)],
                         sample->releaseTimeConstant > 0.0f ? sample->releaseTimeConstant : current->releaseTimeConstant,
                         sampleRate, ++noteCounter);
 }

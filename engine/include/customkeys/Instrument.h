@@ -69,6 +69,9 @@ struct Instrument
         strings of a real piano do. 128 means every key is damped. */
     int undampedFromKey = 128;
 
+    /** Linear level for each key (voicing), applied on top of the velocity level. */
+    std::array<float, 128> keyGain = [] { std::array<float, 128> a {}; a.fill (1.0f); return a; }();
+
     /** Linear level for each velocity 0-127, applied on top of the sample's gain. */
     std::array<float, 128> velocityGain {};
 
