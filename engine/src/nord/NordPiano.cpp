@@ -473,6 +473,12 @@ std::shared_ptr<Instrument> buildInstrument (const PianoInfo& info,
     instrument->name = info.name.empty() ? "Nord piano" : info.name;
     instrument->zoneForKey.fill (-1);
     instrument->undampedFromKey = std::clamp (info.undampedFrom, 0, 128);
+
+    // A hard-struck note peaks near -15 dBFS on the instrument itself: each stroke's
+    // level word (+0x34) cancels its recorded level, about 0.1 dB a step, so every layer
+    // plays at the same level before touch, and the trims and a fixed 6 dB pull it down.
+    // Matching that leaves room for big pedalled chords before the limiter has to act.
+    instrument->outputGain = 0.18f;
     for (size_t k = 0; k < 128; ++k)
         instrument->keyTuneCents[k] = static_cast<float> (info.keyTuneCents[k]);
 
