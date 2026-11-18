@@ -2,6 +2,7 @@
 #include "PluginEditor.h"
 
 #include "customkeys/NordPiano.h"
+#include "customkeys/SampleLibrary.h"
 
 CustomKeysProcessor::CustomKeysProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true))
@@ -15,9 +16,18 @@ CustomKeysProcessor::~CustomKeysProcessor()
     stopLoader();
 }
 
-bool CustomKeysProcessor::canLoad (const juce::File& file)
+namespace
+{
+bool isNordPiano (const juce::File& file)
 {
     return file.existsAsFile() && file.hasFileExtension ("npno");
+}
+} // namespace
+
+bool CustomKeysProcessor::canLoad (const juce::File& file)
+{
+    // .npno pianos, .sfz instruments, single WAV/AIFF/FLAC files and folders of them.
+    return isNordPiano (file) || ck::library::canLoad (file.getFullPathName().toStdString());
 }
 
 void CustomKeysProcessor::stopLoader()
@@ -39,26 +49,44 @@ void CustomKeysProcessor::loadInstrument (const juce::File& file)
 
     if (! canLoad (file))
     {
-        status = file.getFileName() + " isn't a Nord piano (.npno). Other formats are coming.";
+        status = file.getFileName() + " isn't something CustomKeys can open. Try a .npno piano, an .sfz file, "
+                 "a WAV, AIFF or FLAC file, or a folder of them.";
         return;
     }
 
     requestedFile = file;
     loading.store (true);
     progress.store (0.0f);
-    status = "Loading " + file.getFileNameWithoutExtension() + "...";
+    status = "Loading " + (file.isDirectory() ? file.getFileName() : file.getFileNameWithoutExtension()) + "...";
 
     loader = std::thread ([this, file]
     {
+        const auto path = file.getFullPathName().toStdString();
         std::string error;
-        ck::nord::LoadOptions options;
-        options.progress = &progress;
-        options.cancel = &cancelLoad;
-        auto instrument = ck::nord::loadPiano (file.getFullPathName().toStdString(), error, options);
+        std::shared_ptr<ck::Instrument> instrument;
+        juce::StringArray warnings;
+
+        if (isNordPiano (file))
+        {
+            ck::nord::LoadOptions options;
+            options.progress = &progress;
+            options.cancel = &cancelLoad;
+            instrument = ck::nord::loadPiano (path, error, options);
+        }
+        else
+        {
+            ck::library::LoadReport report;
+            ck::library::LoadOptions options;
+            options.progress = &progress;
+            options.cancel = &cancelLoad;
+            instrument = ck::library::load (path, error, &report, options);
+            for (const auto& warning : report.warnings)
+                warnings.add (juce::String (warning));
+        }
 
         std::lock_guard lock (resultLock);
         if (! cancelLoad.load())
-            result = LoadResult { std::move (instrument), juce::String (error), file };
+            result = LoadResult { std::move (instrument), juce::String (error), file, std::move (warnings) };
         loading.store (false);
     });
 }
@@ -84,6 +112,14 @@ void CustomKeysProcessor::timerCallback()
             status = juce::String (done->instrument->name) + "  ("
                      + juce::String (done->instrument->samples.size()) + " recordings, "
                      + juce::String (megabytes, 0) + " MB)";
+
+            // Say what was skipped or approximated; the full list goes to the debug log.
+            if (! done->warnings.isEmpty())
+            {
+                status += "  " + juce::String (done->warnings.size())
+                          + (done->warnings.size() == 1 ? " note: " : " notes: ") + done->warnings[0];
+                DBG ("Load notes:\n" << done->warnings.joinIntoString ("\n"));
+            }
         }
         else
         {
@@ -163,7 +199,7 @@ void CustomKeysProcessor::setStateInformation (const void* data, int sizeInBytes
     if (path.isNotEmpty() && juce::File::isAbsolutePath (path) && juce::File (path) != requestedFile)
     {
         const juce::File file (path);
-        if (file.existsAsFile())
+        if (file.exists())
             loadInstrument (file);
         else
             status = "Couldn't find " + file.getFileName() + ". Is its drive connected?";
