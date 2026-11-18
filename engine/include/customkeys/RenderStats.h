@@ -18,6 +18,8 @@ public:
         uint32_t overloads = 0;  ///< Blocks that took longer to render than to play.
         int activeVoices = 0;
         int peakVoices = 0;
+        uint32_t steals = 0;         ///< Notes cut short because every voice was busy.
+        uint32_t limitedBlocks = 0;  ///< Blocks where the output limiter had to act.
     };
 
     Snapshot snapshot() const noexcept
@@ -26,7 +28,9 @@ public:
                  peakLoad.load (std::memory_order_relaxed),
                  overloads.load (std::memory_order_relaxed),
                  activeVoices.load (std::memory_order_relaxed),
-                 peakVoices.load (std::memory_order_relaxed) };
+                 peakVoices.load (std::memory_order_relaxed),
+                 steals.load (std::memory_order_relaxed),
+                 limitedBlocks.load (std::memory_order_relaxed) };
     }
 
     /** Called from the UI thread; the audio thread may race it harmlessly. */
@@ -35,7 +39,12 @@ public:
         peakLoad.store (0.0f, std::memory_order_relaxed);
         peakVoices.store (0, std::memory_order_relaxed);
         overloads.store (0, std::memory_order_relaxed);
+        steals.store (0, std::memory_order_relaxed);
+        limitedBlocks.store (0, std::memory_order_relaxed);
     }
+
+    void recordSteal() noexcept    { steals.fetch_add (1, std::memory_order_relaxed); }
+    void recordLimiting() noexcept { limitedBlocks.fetch_add (1, std::memory_order_relaxed); }
 
     // Audio thread only.
     void recordBlock (float load, int voices) noexcept
@@ -57,6 +66,8 @@ private:
     std::atomic<uint32_t> overloads { 0 };
     std::atomic<int> activeVoices { 0 };
     std::atomic<int> peakVoices { 0 };
+    std::atomic<uint32_t> steals { 0 };
+    std::atomic<uint32_t> limitedBlocks { 0 };
 
     static_assert (std::atomic<float>::is_always_lock_free);
     static_assert (std::atomic<int>::is_always_lock_free);

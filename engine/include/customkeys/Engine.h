@@ -23,12 +23,12 @@ namespace ck {
 class Engine
 {
 public:
-    static constexpr int defaultPolyphony = 128;
-    static constexpr int maxPolyphonyLimit = 256;
+    static constexpr int defaultPolyphony = 256;
+    static constexpr int maxPolyphonyLimit = 512;
 
     /** Extra voices beyond the polyphony limit, used only for the short fade of
         stolen or damped notes so a new note never has to wait for one. */
-    static constexpr int fadeHeadroom = 16;
+    static constexpr int fadeHeadroom = 32;
 
     Engine();
 
@@ -74,6 +74,7 @@ private:
     int countSoundingVoices() const noexcept;
 
     void syncInstrument() noexcept;
+    void limit (float* left, float* right, int numSamples) noexcept;
 
     std::vector<Voice> voices;
 
@@ -90,6 +91,14 @@ private:
     uint64_t noteCounter = 0;
     bool sustainDown = false;
     RenderStats renderStats;
+
+    // Output limiter: big pedalled chords sum past full scale, and a hard clip
+    // sounds like crackles. Gain drops instantly to keep peaks at the ceiling and
+    // recovers smoothly.
+    static constexpr float limiterCeiling = 0.89f;      // -1 dBFS
+    static constexpr float limiterReleaseSeconds = 0.15f;
+    float limiterGain = 1.0f;
+    float limiterReleaseCoefficient = 0.0f;
 };
 
 } // namespace ck

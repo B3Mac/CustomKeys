@@ -213,3 +213,39 @@ CK_TEST ("samples: the audio thread never allocates while playing samples")
         engine.process (out, 2, 256, {});
     CK_CHECK (cktest::AllocationCounter::stop() == 0);
 }
+
+CK_TEST ("samples: a huge pedalled chord is limited instead of clipping")
+{
+    Engine engine;
+    engine.prepare (rate);
+    engine.setInstrument (sineInstrument (440.0, 48000, 24000, 24000));
+
+    std::vector<MidiEvent> chord { MidiEvent::sustain (0, true) };
+    for (uint8_t note = 40; note < 100; note += 2)
+        chord.push_back (MidiEvent::noteOn (0, note, 127)); // 30 notes at 0.5 each
+    auto out = renderLeft (engine, 48000, chord);
+
+    CK_CHECK (peakOf (out) <= 0.891f);
+    CK_CHECK (peakOf (out) > 0.5f);
+    CK_CHECK (engine.stats().snapshot().limitedBlocks > 0);
+
+    // A single quiet note afterwards plays at its own level again once the limiter recovers.
+    Engine quiet;
+    quiet.prepare (rate);
+    quiet.setInstrument (sineInstrument (440.0, 48000));
+    auto one = renderLeft (quiet, 4800, { MidiEvent::noteOn (0, 69, 100) });
+    CK_CHECK (std::abs (peakOf (one) - 0.5f) < 0.01f);
+    CK_CHECK (quiet.stats().snapshot().limitedBlocks == 0);
+}
+
+CK_TEST ("samples: steals are counted")
+{
+    Engine engine;
+    engine.prepare (rate, 4);
+    engine.setInstrument (sineInstrument (440.0, 48000));
+    std::vector<MidiEvent> notes;
+    for (uint8_t note = 60; note < 66; ++note)
+        notes.push_back (MidiEvent::noteOn (0, note, 100));
+    renderLeft (engine, 256, notes);
+    CK_CHECK (engine.stats().snapshot().steals == 2);
+}

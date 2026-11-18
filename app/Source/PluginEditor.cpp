@@ -159,6 +159,7 @@ void CustomKeysEditor::timerCallback()
                        juce::dontSendNotification);
     loadLabel.setColour (juce::Label::textColourId, stats.overloads > 0 ? Colours::warning : Colours::text);
 
-    voicesLabel.setText ("Voices " + juce::String (stats.activeVoices) + " (peak " + juce::String (stats.peakVoices) + ")",
+    voicesLabel.setText ("Voices " + juce::String (stats.activeVoices) + " (peak " + juce::String (stats.peakVoices) + ")"
+                             + (stats.steals > 0 ? ", " + juce::String (stats.steals) + " stolen" : juce::String()),
                          juce::dontSendNotification);
 }

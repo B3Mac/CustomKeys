@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <tuple>
 
@@ -19,6 +20,8 @@ void Engine::prepare (double newSampleRate, int maxPolyphony)
     voices.assign (static_cast<size_t> (polyphony + fadeHeadroom), Voice {});
     sustainDown = false;
     noteCounter = 0;
+    limiterGain = 1.0f;
+    limiterReleaseCoefficient = static_cast<float> (std::exp (-1.0 / (limiterReleaseSeconds * sampleRate)));
     current = requested.load();
     inUse.store (current);
 }
@@ -110,6 +113,7 @@ void Engine::process (float* const* outputs, int numChannels, int numSamples,
         handleEvent (event);
     }
     renderUntil (numSamples);
+    limit (left, right, numSamples);
 
     if (numSamples > 0)
     {
@@ -117,6 +121,33 @@ void Engine::process (float* const* outputs, int numChannels, int numSamples,
         const double blockSeconds = numSamples / sampleRate;
         renderStats.recordBlock (static_cast<float> (elapsed.count() / blockSeconds), activeVoiceCount());
     }
+}
+
+void Engine::limit (float* left, float* right, int numSamples) noexcept
+{
+    if (left == nullptr)
+        return;
+
+    bool limited = false;
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const float peak = std::max (std::abs (left[i]), right != nullptr ? std::abs (right[i]) : 0.0f);
+
+        // Recover towards unity, then clamp so this sample never exceeds the ceiling.
+        limiterGain = 1.0f - (1.0f - limiterGain) * limiterReleaseCoefficient;
+        if (peak * limiterGain > limiterCeiling)
+        {
+            limiterGain = limiterCeiling / peak;
+            limited = true;
+        }
+
+        left[i] *= limiterGain;
+        if (right != nullptr)
+            right[i] *= limiterGain;
+    }
+
+    if (limited)
+        renderStats.recordLimiting();
 }
 
 void Engine::handleEvent (const MidiEvent& event) noexcept
@@ -164,7 +195,10 @@ void Engine::noteOn (int note, int velocity) noexcept
 
     if (countSoundingVoices() >= polyphony)
         if (auto* victim = chooseVoiceToSteal())
+        {
             victim->fadeOut();
+            renderStats.recordSteal();
+        }
 
     Voice* voice = findFreeVoice();
 
