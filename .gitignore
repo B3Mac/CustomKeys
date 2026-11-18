@@ -1,0 +1,31 @@
+# Build output
+build*/
+cmake-build-*/
+out/
+dist/
+*.zip
+
+# IDEs
+.vscode/
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Sample libraries are large and usually licensed; keep them out of git
+*.wav
+*.aif
+*.aiff
+*.flac
+*.npno
+*.nsmp
+
+# Local SDKs (AAX SDK is under Avid's licence and must not be committed)
+sdks/
+AAX_SDK*/
+
+# Logs
+*.log
