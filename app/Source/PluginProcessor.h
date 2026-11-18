@@ -49,8 +49,9 @@ public:
     /** Thread-safe: the next audio block silences every voice. */
     void panic() noexcept { panicRequested.store (true); }
 
-    /** Starts loading an instrument file (a Nord Piano .npno for now) in the
-        background; the current sound keeps playing until the new one is ready. */
+    /** Starts loading an instrument in the background: a Nord Piano .npno, an .sfz,
+        a single WAV/AIFF/FLAC file, or a folder of them. The current sound keeps
+        playing until the new one is ready. */
     void loadInstrument (const juce::File& file);
 
     bool isLoading() const noexcept { return loading.load(); }
@@ -60,7 +61,7 @@ public:
     juce::String instrumentStatus() const { return status; }
     juce::File instrumentFile() const { return loadedFile; }
 
-    /** True if CustomKeys can open this file. */
+    /** True if CustomKeys can open this file or folder. */
     static bool canLoad (const juce::File& file);
 
     ck::RenderStats& renderStats() noexcept { return engine.stats(); }
@@ -79,6 +80,7 @@ private:
         std::shared_ptr<const ck::Instrument> instrument;
         juce::String error;
         juce::File file;
+        juce::StringArray warnings; ///< Things the loader skipped or approximated.
     };
     std::thread loader;
     std::atomic<bool> cancelLoad { false }, loading { false };
@@ -86,7 +88,7 @@ private:
     std::mutex resultLock;
     std::optional<LoadResult> result;
     juce::File loadedFile, requestedFile;
-    juce::String status { "Test tone. Load a Nord piano (.npno) to play it." };
+    juce::String status { "Test tone. Load a piano: .npno, .sfz, WAV, AIFF, FLAC, or a folder of samples." };
 
     // Preallocated so the audio thread never allocates while translating MIDI.
     std::array<ck::MidiEvent, 4096> eventScratch {};

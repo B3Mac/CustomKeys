@@ -3,7 +3,10 @@
 add_library(customkeys_engine STATIC
     src/Engine.cpp
     src/Voice.cpp
-    src/nord/NordPiano.cpp)
+    src/nord/NordPiano.cpp
+    src/formats/AudioFile.cpp
+    src/formats/SfzParser.cpp
+    src/formats/SampleLibrary.cpp)
 
 add_library(CustomKeys::Engine ALIAS customkeys_engine)
 

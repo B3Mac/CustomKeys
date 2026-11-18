@@ -113,8 +113,11 @@ void CustomKeysEditor::chooseInstrument()
     if (! start.isDirectory())
         start = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
 
-    chooser = std::make_unique<juce::FileChooser> ("Choose a Nord piano", start, "*.npno");
-    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+    // A folder of WAV/AIFF/FLAC samples is an instrument too, so folders can be chosen.
+    chooser = std::make_unique<juce::FileChooser> ("Choose a piano: a .npno or .sfz file, an audio file, or a folder of samples",
+                                                   start, "*.npno;*.sfz;*.wav;*.wave;*.aif;*.aiff;*.aifc;*.flac");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                              | juce::FileBrowserComponent::canSelectDirectories,
                           [this] (const juce::FileChooser& fc)
                           {
                               const auto file = fc.getResult();

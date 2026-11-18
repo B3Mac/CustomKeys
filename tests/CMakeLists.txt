@@ -2,7 +2,8 @@ add_executable(customkeys_engine_tests
     TestMain.cpp
     EngineTests.cpp
     SamplePlaybackTests.cpp
-    NordPianoTests.cpp)
+    NordPianoTests.cpp
+    SampleLibraryTests.cpp)
 
 target_link_libraries(customkeys_engine_tests PRIVATE CustomKeys::Engine)
 
