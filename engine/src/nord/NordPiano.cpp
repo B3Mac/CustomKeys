@@ -9,6 +9,9 @@
 // inside the CNSP container):
 //   +0x16   metadata block, name as "name#variant"
 //   +0x8C   128-byte per-key map: each byte is the root note of that key's zone
+//   +0x10C, +0x38C  per-key level trims (int8); +0x40C a global trim
+//   +0x18C  per-key tuning correction (int8 cents; added in v6, subtracted in v5)
+//   +0x40D  first key without a damper; +0x49C release mode
 //   +0x61C  u16 version, u16 channels, u16 stroke count, then u16[128] layers per root
 //   +0x732  stroke records, 0x76 bytes each
 //   blocks  511 words mono / 1022 stereo. Word 0: bits 0-4 residual width, 5-7
@@ -41,12 +44,19 @@ constexpr size_t recordsOffset = 0x732;
 constexpr size_t recordSize = 0x76;
 constexpr int blockOverlap = 64;
 constexpr int cnspV6 = 0x464;
+constexpr size_t keyTrimOffsetA = 0x10c;
+constexpr size_t keyTuneOffset = 0x18c;
+constexpr size_t keyTrimOffsetB = 0x38c;
+constexpr size_t globalTrimOffset = 0x40c;
+constexpr size_t undampedFromOffset = 0x40d;
+constexpr size_t releaseModeOffset = 0x49c;
 
 constexpr int predictors[5][4] = { { 0, 0, 0, 0 }, { 1, 0, 0, 0 }, { 2, -1, 0, 0 }, { 3, -3, 1, 0 }, { 4, -6, 4, -1 } };
 
 uint16_t be16 (const uint8_t* p) noexcept { return static_cast<uint16_t> ((p[0] << 8) | p[1]); }
 uint32_t be32 (const uint8_t* p) noexcept { return (uint32_t { be16 (p) } << 16) | be16 (p + 2); }
 int16_t be16s (const uint8_t* p) noexcept { return static_cast<int16_t> (be16 (p)); }
+int s8 (uint8_t b) noexcept { return b > 127 ? b - 256 : b; }
 
 int findCnsp (std::span<const uint8_t> bytes) noexcept
 {
@@ -200,6 +210,18 @@ bool readPianoInfo (const ByteReader& read, uint64_t fileSize, PianoInfo& info, 
             info.zones.push_back ({ root, range.first, range.second });
     std::sort (info.zones.begin(), info.zones.end(), [] (const auto& a, const auto& b) { return a.lowNote < b.lowNote; });
 
+    // Per-key tuning, level trims and dampers (header, relative to CNSP).
+    info.v6 = dirVersion >= cnspV6;
+    for (size_t k = 0; k < 128; ++k)
+    {
+        info.keyTuneCents[k] = (info.v6 ? 1 : -1) * s8 (base[keyTuneOffset + k]);
+        info.keyLevelTrim[k] = s8 (base[keyTrimOffsetA + k]) + s8 (base[keyTrimOffsetB + k]) + s8 (base[globalTrimOffset]);
+    }
+    info.undampedFrom = base[undampedFromOffset];
+    if (info.undampedFrom < 60) // 0 from old tools; factory pianos store 89 or above. Every key damped is the safe reading.
+        info.undampedFrom = 128;
+    info.releaseMode = base[releaseModeOffset];
+
     // Stroke records.
     const int floorScale = dirVersion < cnspV6 ? 5 : 1; // v5 stores floors in 1 dB steps
     info.strokes.resize (static_cast<size_t> (count));
@@ -219,6 +241,9 @@ bool readPianoInfo (const ByteReader& read, uint64_t fileSize, PianoInfo& info, 
         s.loopStart = be32 (r + 0x1c);
         s.loopLength = be32 (r + 0x20);
         s.loopDecay = s.loopLength > 0 ? be32 (r + 0x2e) / 8388608.0 : 1.0;
+        s.fineTune = s8 (r[0x32]);
+        s.levelWord = be16 (r + 0x34);
+        s.damperIndex = r[0x72];
     }
 
     // Zone of each stroke: from the layer table, or "a loudest normal layer opens a zone".
@@ -355,6 +380,11 @@ bool decodeStroke (std::span<const uint8_t> bytes, const PianoInfo& info, const 
     return true;
 }
 
+double damperT60 (int damperIndex) noexcept
+{
+    return 0.0015 * std::pow (10.0, damperIndex / 20.0);
+}
+
 double touchAttenuation (int velocity) noexcept
 {
     const double v = std::clamp (velocity, 1, 127);
@@ -416,6 +446,17 @@ void toSample (const std::vector<int32_t>& pcm, const PianoInfo& info, const Str
         if (stroke.loopDecay > 0.0 && stroke.loopDecay < 1.0)
             sample.loopDecayPerSecond = envelopeRate * std::log (stroke.loopDecay);
     }
+
+    sample.tuneCents = static_cast<float> (stroke.fineTune);
+
+    // The key-up damper, when the piano uses one (release mode 0xFF means none). A
+    // T60 below 20 ms or above 5 s is taken as unreadable and the default fade is kept.
+    if (info.releaseMode != 0xff && stroke.damperIndex > 0)
+    {
+        const double t60 = damperT60 (stroke.damperIndex);
+        if (t60 >= 0.02 && t60 <= 5.0)
+            sample.releaseTimeConstant = static_cast<float> (t60 / std::log (1000.0));
+    }
 }
 
 std::shared_ptr<Instrument> buildInstrument (const PianoInfo& info,
@@ -431,6 +472,9 @@ std::shared_ptr<Instrument> buildInstrument (const PianoInfo& info,
     auto instrument = std::make_shared<Instrument>();
     instrument->name = info.name.empty() ? "Nord piano" : info.name;
     instrument->zoneForKey.fill (-1);
+    instrument->undampedFromKey = std::clamp (info.undampedFrom, 0, 128);
+    for (size_t k = 0; k < 128; ++k)
+        instrument->keyTuneCents[k] = static_cast<float> (info.keyTuneCents[k]);
 
     // Pick the stroke for every zone and velocity; decode only the ones that play.
     std::map<int, int32_t> sampleOfStroke;

@@ -174,10 +174,14 @@ int analyze (const fs::path& file)
                  info.zones.size(), info.strokes.size());
     for (auto [f, n] : flagCounts)
         std::printf (" %d=%d", f, n);
-    std::printf (")\n");
-    std::printf ("zone root keys  layers  loudest: secs  loop(start+len/frames)  seam  seam/2   cents  yin    peak  avgdB\n");
+    std::printf (") undamped from key %d, release mode %d\n", info.undampedFrom, info.releaseMode);
+    std::printf ("zone root keys  layers  loudest: secs  loop(start+len/frames)  seam   cents  yin  keyTune fine  tuned   T60ms level trim  peakdB\n");
 
-    std::vector<double> cents;
+    std::vector<double> cents, tuned;
+    int midZone = 0;
+    for (size_t z = 0; z < info.zones.size(); ++z)
+        if (std::abs (info.zones[z].rootNote - 60) < std::abs (info.zones[static_cast<size_t> (midZone)].rootNote - 60))
+            midZone = static_cast<int> (z);
     for (size_t z = 0; z < info.zones.size(); ++z)
     {
         const auto& kz = info.zones[z];
@@ -212,17 +216,37 @@ int analyze (const fs::path& file)
         double quality = 1.0;
         const double period = yinPeriod (mono, at, expectedPeriod, quality);
         const double dev = period > 0 ? 1200.0 * std::log2 (expectedPeriod / period) : std::nan ("");
-        if (period > 0) cents.push_back (dev);
+        const double corrected = dev + info.keyTuneCents[static_cast<size_t> (kz.rootNote)] - loud->fineTune;
+        if (period > 0) { cents.push_back (dev); tuned.push_back (corrected); }
 
         const int64_t end = loud->loopStart + loud->loopLength;
         const double seam = loud->loopLength > 0 ? seamCorrelation (mono, end, loud->loopStart) : std::nan ("");
-        const double seamHalf = loud->loopLength > 0 ? seamCorrelation (mono, end / 2, loud->loopStart / 2) : std::nan ("");
+        (void) rms;
 
-        std::printf ("%4zu %4d %3d-%-3d %4d  %13.2f  %8lld+%-7lld/%-8lld %5.2f  %5.2f  %+7.1f  %.2f  %5.0f  %5.1f\n",
+        std::printf ("%4zu %4d %3d-%-3d %4d  %13.2f  %8lld+%-7lld/%-8lld %5.2f  %+7.1f  %.2f  %+5d  %+4d  %+7.1f  %5.0f  %5d  %+4d  %6.1f\n",
                      z, kz.rootNote, kz.lowNote, kz.highNote, layers,
                      static_cast<double> (loud->frames) / ck::nord::pianoSampleRate,
                      static_cast<long long> (loud->loopStart), static_cast<long long> (loud->loopLength), static_cast<long long> (loud->frames),
-                     seam, seamHalf, dev, quality, peak, 20.0 * std::log10 (std::max (rms, 1.0) / std::max (peak, 1.0)));
+                     seam, dev, quality, info.keyTuneCents[static_cast<size_t> (kz.rootNote)], loud->fineTune, corrected,
+                     1000.0 * ck::nord::damperT60 (loud->damperIndex), loud->levelWord, info.keyLevelTrim[static_cast<size_t> (kz.rootNote)],
+                     20.0 * std::log10 (std::max (peak, 1.0) / 32768.0));
+
+        if (static_cast<int> (z) == midZone)
+        {
+            // Every layer of one mid-keyboard zone: raw peak against the level word and floor.
+            std::printf ("     layers of zone %zu: floor(0.2dB) level  rawPeakdB  flags\n", z);
+            for (const auto& s : info.strokes)
+            {
+                if (s.zone != static_cast<int> (z)) continue;
+                std::vector<uint8_t> b (static_cast<size_t> (s.blocks) * static_cast<size_t> (info.blockWords) * 2);
+                std::vector<int32_t> p;
+                double pk = 0;
+                if (read (s.offset, b.size(), b.data()) && ck::nord::decodeStroke (b, info, s, p, error))
+                    for (auto v : p) pk = std::max (pk, std::abs (static_cast<double> (v)));
+                std::printf ("       stroke %5d  %4d  %5d  %8.1f  %d\n", s.index, s.attenuationFloor, s.levelWord,
+                             20.0 * std::log10 (std::max (pk, 1.0) / 32768.0), s.flags);
+            }
+        }
     }
 
     if (! cents.empty())
@@ -230,6 +254,9 @@ int analyze (const fs::path& file)
         std::sort (cents.begin(), cents.end());
         std::printf ("pitch vs expected (root + %d semitones at 44.1 kHz): median %+.1f cents, min %+.1f, max %+.1f over %zu zones\n",
                      ck::nord::rootOffsetSemitones, cents[cents.size() / 2], cents.front(), cents.back(), cents.size());
+        std::sort (tuned.begin(), tuned.end());
+        std::printf ("after the key tuning table and fine tune: median %+.1f cents, min %+.1f, max %+.1f\n",
+                     tuned[tuned.size() / 2], tuned.front(), tuned.back());
     }
     return 0;
 }

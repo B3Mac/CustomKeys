@@ -52,6 +52,9 @@ struct Stroke
     int64_t loopStart = 0;
     int64_t loopLength = 0;   ///< 0 = no loop.
     double loopDecay = 1.0;   ///< Level factor per envelope update inside the loop.
+    int fineTune = 0;         ///< +0x32, cents, subtracted from the pitch.
+    int levelWord = 0;        ///< +0x34, the stroke's level (see PianoInfo::strokeLevelDb).
+    int damperIndex = 0;      ///< +0x72: key-up T60 = 1.5 ms * 10^(index / 20).
 };
 
 /** Everything in a .npno except the audio itself. */
@@ -64,6 +67,12 @@ struct PianoInfo
     int blockWords = 511;
     std::vector<KeyZone> zones; ///< Low to high.
     std::vector<Stroke> strokes;
+
+    bool v6 = true;                       ///< v6 directory (0.2 dB floors); false for v5.
+    std::array<int, 128> keyTuneCents {}; ///< Header +0x18C per key, sign-corrected for v5.
+    std::array<int, 128> keyLevelTrim {}; ///< Header +0x10C + +0x38C per key, + +0x40C.
+    int undampedFrom = 128;               ///< Header +0x40D: first key without a damper.
+    int releaseMode = 0;                  ///< Header +0x49C.
 
     /** How many key zones the strokes make up. */
     int strokeZoneCount() const noexcept;
@@ -80,6 +89,9 @@ bool readPianoInfo (const ByteReader& read, uint64_t fileSize, PianoInfo& info, 
     stroke's blocks (stroke.blocks * info.blockWords * 2 bytes). */
 bool decodeStroke (std::span<const uint8_t> blocks, const PianoInfo& info, const Stroke& stroke,
                    std::vector<int32_t>& interleaved, std::string& error);
+
+/** Seconds for a key-up to fall 60 dB, from a stroke's damper index. */
+double damperT60 (int damperIndex) noexcept;
 
 /** Velocity (1-127) to attenuation in 0.2 dB steps: a 40 log10(v/127) dB law, as OpenNord uses. */
 double touchAttenuation (int velocity) noexcept;

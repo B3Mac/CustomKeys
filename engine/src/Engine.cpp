@@ -185,7 +185,8 @@ void Engine::noteOn (int note, int velocity) noexcept
         if (sampleIndex < 0)
             return;
         sample = &current->samples[static_cast<size_t> (sampleIndex)];
-        pitchSemitones = note - zone.rootKey;
+        pitchSemitones = note - zone.rootKey
+                         + (current->keyTuneCents[static_cast<size_t> (note)] - sample->tuneCents) / 100.0;
     }
 
     // Re-striking a note damps the voice already playing it.
@@ -224,15 +225,25 @@ void Engine::noteOn (int note, int velocity) noexcept
 
     voice->startSample (note, *sample, pitchSemitones,
                         current->outputGain * current->velocityGain[static_cast<size_t> (velocity)],
-                        current->releaseTimeConstant, sampleRate, ++noteCounter);
+                        sample->releaseTimeConstant > 0.0f ? sample->releaseTimeConstant : current->releaseTimeConstant,
+                        sampleRate, ++noteCounter);
 }
 
 void Engine::noteOff (int note) noexcept
 {
+    // Undamped keys ring on after key-up whatever the pedal does, until they die away.
+    const bool undamped = current != nullptr && note >= current->undampedFromKey;
+
     for (auto& voice : voices)
     {
         if (voice.isIdle() || voice.isFading() || voice.note() != note || ! voice.keyDown)
             continue;
+
+        if (undamped)
+        {
+            voice.keyDown = false;
+            continue;
+        }
 
         if (sustainDown)
         {

@@ -249,3 +249,29 @@ CK_TEST ("samples: steals are counted")
     renderLeft (engine, 256, notes);
     CK_CHECK (engine.stats().snapshot().steals == 2);
 }
+
+CK_TEST ("samples: key tuning and a recording's fine tune shift the pitch")
+{
+    Engine engine;
+    engine.prepare (rate);
+    auto inst = sineInstrument (440.0, 48000);
+    inst->keyTuneCents[69] = 50.0f;            // a quarter tone up...
+    for (auto& s : inst->samples) s.tuneCents = 20.0f; // ...less 20 cents
+    engine.setInstrument (inst);
+    const auto out = renderLeft (engine, 24000, { MidiEvent::noteOn (0, 69, 100) });
+    CK_CHECK (std::abs (measureFrequency (out, 0) - 440.0 * std::pow (2.0, 30.0 / 1200.0)) < 1.0);
+}
+
+CK_TEST ("samples: undamped keys ring on after key-up and ignore the pedal")
+{
+    Engine engine;
+    engine.prepare (rate);
+    auto inst = sineInstrument (440.0, 4800, 2400, 2400);
+    inst->undampedFromKey = 90;
+    engine.setInstrument (inst);
+    renderLeft (engine, 512, { MidiEvent::noteOn (0, 95, 100), MidiEvent::noteOn (0, 60, 100) });
+    renderLeft (engine, 512, { MidiEvent::noteOff (0, 95), MidiEvent::noteOff (0, 60),
+                               MidiEvent::sustain (10, true), MidiEvent::sustain (20, false) });
+    renderLeft (engine, 48000);
+    CK_CHECK (engine.activeVoiceCount() == 1); // 95 still rings, 60 was damped
+}

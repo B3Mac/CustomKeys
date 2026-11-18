@@ -29,6 +29,12 @@ struct Sample
         log of the level change per second (0 holds the level, negative decays). */
     double loopDecayPerSecond = 0.0;
 
+    /** Fine tune of this recording in cents; subtracted from the played pitch. */
+    float tuneCents = 0.0f;
+
+    /** Key-up fade for this recording (seconds to fall by 1/e); 0 uses the instrument's. */
+    float releaseTimeConstant = 0.0f;
+
     bool loops() const noexcept { return loopLength > 0 && loopStart + loopLength <= frames; }
 };
 
@@ -55,6 +61,13 @@ struct Instrument
 
     /** Zone index for each MIDI key, or -1 where the instrument has no sound. */
     std::array<int16_t, 128> zoneForKey {};
+
+    /** Per-key tuning correction in cents, added to the played pitch. */
+    std::array<float, 128> keyTuneCents {};
+
+    /** Keys from this one up have no damper: they ring on after key-up, as the top
+        strings of a real piano do. 128 means every key is damped. */
+    int undampedFromKey = 128;
 
     /** Linear level for each velocity 0-127, applied on top of the sample's gain. */
     std::array<float, 128> velocityGain {};
