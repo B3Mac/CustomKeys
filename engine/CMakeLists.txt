@@ -2,12 +2,17 @@
 # Everything in here must stay real-time safe on the audio thread.
 add_library(customkeys_engine STATIC
     src/Engine.cpp
-    src/Voice.cpp)
+    src/Voice.cpp
+    src/nord/NordPiano.cpp)
 
 add_library(CustomKeys::Engine ALIAS customkeys_engine)
 
 target_include_directories(customkeys_engine PUBLIC include)
 target_compile_features(customkeys_engine PUBLIC cxx_std_20)
+
+# The Nord loader decodes on worker threads.
+find_package(Threads REQUIRED)
+target_link_libraries(customkeys_engine PUBLIC Threads::Threads)
 set_target_properties(customkeys_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(MSVC)

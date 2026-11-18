@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <tuple>
 
@@ -19,6 +20,49 @@ void Engine::prepare (double newSampleRate, int maxPolyphony)
     voices.assign (static_cast<size_t> (polyphony + fadeHeadroom), Voice {});
     sustainDown = false;
     noteCounter = 0;
+    limiterGain = 1.0f;
+    limiterReleaseCoefficient = static_cast<float> (std::exp (-1.0 / (limiterReleaseSeconds * sampleRate)));
+    current = requested.load();
+    inUse.store (current);
+}
+
+void Engine::setInstrument (std::shared_ptr<const Instrument> newInstrument)
+{
+    if (newInstrument != nullptr)
+        owned.push_back (newInstrument);
+    requested.store (newInstrument.get());
+    collectGarbage();
+}
+
+std::shared_ptr<const Instrument> Engine::instrument() const
+{
+    const auto* wanted = requested.load();
+    for (const auto& i : owned)
+        if (i.get() == wanted)
+            return i;
+    return nullptr;
+}
+
+void Engine::collectGarbage()
+{
+    const auto* wanted = requested.load();
+    if (inUse.load() != wanted)
+        return; // the audio thread may still be playing an older one
+
+    std::erase_if (owned, [wanted] (const auto& i) { return i.get() != wanted; });
+}
+
+void Engine::syncInstrument() noexcept
+{
+    const auto* wanted = requested.load();
+    if (wanted != current)
+    {
+        // Voices point into the old instrument's samples, so they stop here.
+        for (auto& voice : voices)
+            voice.kill();
+        current = wanted;
+    }
+    inUse.store (current);
 }
 
 void Engine::reset() noexcept
@@ -38,6 +82,8 @@ void Engine::process (float* const* outputs, int numChannels, int numSamples,
                       std::span<const MidiEvent> events) noexcept
 {
     const auto startTime = std::chrono::steady_clock::now();
+
+    syncInstrument();
 
     for (int ch = 0; ch < numChannels; ++ch)
         if (outputs[ch] != nullptr)
@@ -67,6 +113,7 @@ void Engine::process (float* const* outputs, int numChannels, int numSamples,
         handleEvent (event);
     }
     renderUntil (numSamples);
+    limit (left, right, numSamples);
 
     if (numSamples > 0)
     {
@@ -74,6 +121,33 @@ void Engine::process (float* const* outputs, int numChannels, int numSamples,
         const double blockSeconds = numSamples / sampleRate;
         renderStats.recordBlock (static_cast<float> (elapsed.count() / blockSeconds), activeVoiceCount());
     }
+}
+
+void Engine::limit (float* left, float* right, int numSamples) noexcept
+{
+    if (left == nullptr)
+        return;
+
+    bool limited = false;
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const float peak = std::max (std::abs (left[i]), right != nullptr ? std::abs (right[i]) : 0.0f);
+
+        // Recover towards unity, then clamp so this sample never exceeds the ceiling.
+        limiterGain = 1.0f - (1.0f - limiterGain) * limiterReleaseCoefficient;
+        if (peak * limiterGain > limiterCeiling)
+        {
+            limiterGain = limiterCeiling / peak;
+            limited = true;
+        }
+
+        left[i] *= limiterGain;
+        if (right != nullptr)
+            right[i] *= limiterGain;
+    }
+
+    if (limited)
+        renderStats.recordLimiting();
 }
 
 void Engine::handleEvent (const MidiEvent& event) noexcept
@@ -98,6 +172,23 @@ void Engine::handleEvent (const MidiEvent& event) noexcept
 
 void Engine::noteOn (int note, int velocity) noexcept
 {
+    // Find the recording first: a key the instrument has no sound for steals nothing.
+    const Sample* sample = nullptr;
+    double pitchSemitones = 0.0;
+    if (current != nullptr)
+    {
+        const int zoneIndex = current->zoneForKey[static_cast<size_t> (note)];
+        if (zoneIndex < 0)
+            return;
+        const auto& zone = current->zones[static_cast<size_t> (zoneIndex)];
+        const auto sampleIndex = zone.sampleForVelocity[static_cast<size_t> (velocity)];
+        if (sampleIndex < 0)
+            return;
+        sample = &current->samples[static_cast<size_t> (sampleIndex)];
+        pitchSemitones = note - zone.rootKey
+                         + (current->keyTuneCents[static_cast<size_t> (note)] - sample->tuneCents) / 100.0;
+    }
+
     // Re-striking a note damps the voice already playing it.
     for (auto& voice : voices)
         if (! voice.isIdle() && ! voice.isFading() && voice.note() == note)
@@ -105,7 +196,10 @@ void Engine::noteOn (int note, int velocity) noexcept
 
     if (countSoundingVoices() >= polyphony)
         if (auto* victim = chooseVoiceToSteal())
+        {
             victim->fadeOut();
+            renderStats.recordSteal();
+        }
 
     Voice* voice = findFreeVoice();
 
@@ -123,15 +217,34 @@ void Engine::noteOn (int note, int velocity) noexcept
         voice->kill();
     }
 
-    voice->start (note, static_cast<float> (velocity) / 127.0f, sampleRate, ++noteCounter);
+    if (sample == nullptr)
+    {
+        voice->start (note, static_cast<float> (velocity) / 127.0f, sampleRate, ++noteCounter);
+        return;
+    }
+
+    voice->startSample (note, *sample, pitchSemitones,
+                        current->outputGain * current->keyGain[static_cast<size_t> (note)]
+                            * current->velocityGain[static_cast<size_t> (velocity)],
+                        sample->releaseTimeConstant > 0.0f ? sample->releaseTimeConstant : current->releaseTimeConstant,
+                        sampleRate, ++noteCounter);
 }
 
 void Engine::noteOff (int note) noexcept
 {
+    // Undamped keys ring on after key-up whatever the pedal does, until they die away.
+    const bool undamped = current != nullptr && note >= current->undampedFromKey;
+
     for (auto& voice : voices)
     {
         if (voice.isIdle() || voice.isFading() || voice.note() != note || ! voice.keyDown)
             continue;
+
+        if (undamped)
+        {
+            voice.keyDown = false;
+            continue;
+        }
 
         if (sustainDown)
         {

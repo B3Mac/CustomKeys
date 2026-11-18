@@ -1,15 +1,17 @@
 #pragma once
 
+#include "customkeys/Instrument.h"
+
 #include <cstdint>
 
 namespace ck {
 
 /** One sounding note.
 
-    Milestone 1 voices play a test tone (a sine with a touch of second harmonic
-    and a piano-like decay) so the MIDI-to-audio path and latency can be measured
-    before any samples exist. Milestone 2 swaps the oscillator for sample
-    playback; the envelope, stage and stealing logic stay. */
+    A voice plays either a recording from the loaded instrument (startSample) or,
+    when no instrument is loaded, a test tone (start): a sine with a touch of second
+    harmonic and a piano-like decay, so the MIDI-to-audio path can be checked
+    without samples. The envelope, stage and stealing logic are shared. */
 class Voice
 {
 public:
@@ -26,6 +28,11 @@ public:
     static constexpr float attackSeconds  = 0.002f;
 
     void start (int midiNote, float velocity01, double sampleRate, uint64_t order) noexcept;
+
+    /** Plays `sample` for `midiNote`. `pitchSemitones` is the transposition from the
+        recording; `gain` the note's level; `releaseTimeConstant` the key-up fade. */
+    void startSample (int midiNote, const Sample& sample, double pitchSemitones, float gain,
+                      float releaseTimeConstant, double sampleRate, uint64_t order) noexcept;
     void release() noexcept;
     void fadeOut() noexcept;
     void kill() noexcept;
@@ -64,6 +71,15 @@ private:
     bool attacking = false;
 
     double sampleRate = 48000.0;
+
+    // Sample playback (null for the test tone).
+    float readFrame (int64_t frame, int channel) const noexcept;
+    void renderSample (float* left, float* right, int numSamples) noexcept;
+
+    const Sample* sample = nullptr;
+    double position = 0.0;  ///< In frames of the recording.
+    double increment = 1.0; ///< Frames of the recording per output sample.
+    float loopDecayCoefficient = 1.0f;
 };
 
 } // namespace ck

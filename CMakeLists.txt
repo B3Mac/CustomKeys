@@ -25,6 +25,10 @@ add_subdirectory(engine)
 if(CUSTOMKEYS_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+
+    # Command-line check that loads your own .npno files the way the app does.
+    add_executable(customkeys_npno_check tools/NpnoCheck.cpp)
+    target_link_libraries(customkeys_npno_check PRIVATE CustomKeys::Engine)
 endif()
 
 if(CUSTOMKEYS_BUILD_APP)

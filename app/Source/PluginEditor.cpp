@@ -12,6 +12,7 @@ namespace {
     }
 
     constexpr int headerHeight = 64;
+    constexpr int instrumentBarHeight = 44;
     constexpr int lowestKey = 21;  // A0
     constexpr int highestKey = 108; // C8
     constexpr int whiteKeyCount = 52;
@@ -30,7 +31,12 @@ CustomKeysEditor::CustomKeysEditor (CustomKeysProcessor& p)
         addAndMakeVisible (*label);
     }
 
-    for (auto* button : { &resetPeaksButton, &panicButton })
+    instrumentLabel.setColour (juce::Label::textColourId, Colours::text);
+    instrumentLabel.setFont (juce::FontOptions (15.0f));
+    instrumentLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (instrumentLabel);
+
+    for (auto* button : { &resetPeaksButton, &panicButton, &loadButton })
     {
         button->setColour (juce::TextButton::buttonColourId, Colours::panel);
         button->setColour (juce::TextButton::textColourOffId, Colours::text);
@@ -39,6 +45,7 @@ CustomKeysEditor::CustomKeysEditor (CustomKeysProcessor& p)
 
     resetPeaksButton.onClick = [this] { processor.renderStats().resetPeaks(); };
     panicButton.onClick = [this] { processor.panic(); keyboard.repaint(); };
+    loadButton.onClick = [this] { chooseInstrument(); };
 
     keyboard.setAvailableRange (lowestKey, highestKey);
     keyboard.setOctaveForMiddleC (4); // label middle C as C4, matching most keyboards and DAWs
@@ -48,8 +55,8 @@ CustomKeysEditor::CustomKeysEditor (CustomKeysProcessor& p)
     addAndMakeVisible (keyboard);
 
     setResizable (true, true);
-    setResizeLimits (720, 220, 2400, 600);
-    setSize (1100, 300);
+    setResizeLimits (720, 264, 2400, 640);
+    setSize (1100, 344);
 
     startTimerHz (15);
 }
@@ -70,6 +77,9 @@ void CustomKeysEditor::paint (juce::Graphics& g)
     g.setColour (Colours::accent);
     g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
     g.drawText ("CustomKeys", header.reduced (16, 0).removeFromLeft (170), juce::Justification::centredLeft);
+
+    g.setColour (Colours::panel.darker (0.3f));
+    g.fillRect (getLocalBounds().withTrimmedTop (headerHeight).removeFromTop (instrumentBarHeight));
 }
 
 void CustomKeysEditor::resized()
@@ -88,12 +98,49 @@ void CustomKeysEditor::resized()
     loadLabel.setBounds (header.removeFromLeft (third));
     voicesLabel.setBounds (header);
 
+    auto bar = bounds.removeFromTop (instrumentBarHeight).reduced (16, 7);
+    loadButton.setBounds (bar.removeFromLeft (130));
+    bar.removeFromLeft (14);
+    instrumentLabel.setBounds (bar);
+
     keyboard.setBounds (bounds);
     keyboard.setKeyWidth (static_cast<float> (bounds.getWidth()) / whiteKeyCount);
 }
 
+void CustomKeysEditor::chooseInstrument()
+{
+    auto start = processor.instrumentFile().getParentDirectory();
+    if (! start.isDirectory())
+        start = juce::File::getSpecialLocation (juce::File::userHomeDirectory);
+
+    chooser = std::make_unique<juce::FileChooser> ("Choose a Nord piano", start, "*.npno");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [this] (const juce::FileChooser& fc)
+                          {
+                              const auto file = fc.getResult();
+                              if (file != juce::File())
+                                  processor.loadInstrument (file);
+                          });
+}
+
+bool CustomKeysEditor::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return files.size() == 1 && CustomKeysProcessor::canLoad (juce::File (files[0]));
+}
+
+void CustomKeysEditor::filesDropped (const juce::StringArray& files, int, int)
+{
+    if (! files.isEmpty())
+        processor.loadInstrument (juce::File (files[0]));
+}
+
 void CustomKeysEditor::timerCallback()
 {
+    const auto instrumentText = processor.isLoading()
+        ? processor.instrumentStatus() + "  " + juce::String (juce::roundToInt (processor.loadProgress() * 100.0f)) + "%"
+        : processor.instrumentStatus();
+    instrumentLabel.setText (instrumentText, juce::dontSendNotification);
+
     const double sampleRate = processor.currentSampleRate();
     const int block = processor.lastBlockSize();
 
@@ -112,6 +159,8 @@ void CustomKeysEditor::timerCallback()
                        juce::dontSendNotification);
     loadLabel.setColour (juce::Label::textColourId, stats.overloads > 0 ? Colours::warning : Colours::text);
 
-    voicesLabel.setText ("Voices " + juce::String (stats.activeVoices) + " (peak " + juce::String (stats.peakVoices) + ")",
+    voicesLabel.setText ("Voices " + juce::String (stats.activeVoices) + " (peak " + juce::String (stats.peakVoices) + ")"
+                             + (stats.steals > 0 ? ", " + juce::String (stats.steals) + " stolen" : juce::String())
+                             + (stats.limitedBlocks > 0 ? ", limiter " + juce::String (stats.limitedBlocks) : juce::String()),
                          juce::dontSendNotification);
 }
